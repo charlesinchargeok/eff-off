@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <!-- eff-off app icon. Full-bleed square; iOS applies its own squircle mask. -->
+  <rect width="180" height="180" fill="#12402A"/>
+  <text x="90" y="130" text-anchor="middle" fill="#F4F1E8"
+        font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="900" font-size="122" letter-spacing="-8">ff</text>
+</svg>
