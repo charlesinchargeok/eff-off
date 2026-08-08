@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<!--
+  ReviewApp.html — mobile-first review page for the Email Unsubscribe Agent.
+  Served by doGet() in Code.gs via HtmlService (template). The server injects
+  `payload` (JSON: pending senders). Flow: pick Keep / Unsub / Skip per sender
+  (default Skip) → Apply → confirmation summary → Confirm → decisions saved.
+-->
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      margin: 0; background: #f4f5f7; color: #1a1a1a;
+      padding-bottom: 96px; /* room for the sticky Apply bar */
+    }
+    header { padding: 18px 16px 6px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header p { margin: 6px 0 0; color: #555; font-size: 14px; }
+    .section-title {
+      margin: 18px 16px 8px; font-size: 15px; font-weight: 700; color: #444;
+      text-transform: uppercase; letter-spacing: .4px;
+    }
+    .warnbox {
+      margin: 0 12px 8px; padding: 12px 14px; background: #fff4e5;
+      border: 1px solid #f0c36d; border-radius: 10px; font-size: 14px;
+      color: #7a4d00;
+    }
+    .card {
+      background: #fff; margin: 8px 12px; border-radius: 12px;
+      padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }
+    .card.careful { border-left: 5px solid #f0a020; }
+    .who { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .who .name { font-weight: 700; font-size: 16px; word-break: break-word; }
+    .who .acct { font-size: 12px; color: #666; }
+    .addr { color: #666; font-size: 13px; word-break: break-all; margin-top: 2px; }
+    .meta { color: #444; font-size: 13px; margin-top: 6px; }
+    .subjects { margin-top: 10px; }
+    .subjects .subjects-label {
+      color: #555; font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .3px;
+    }
+    .subjects ul {
+      margin: 5px 0 0; padding-left: 19px; color: #333; font-size: 14px;
+      line-height: 1.35;
+    }
+    .subjects li { margin-top: 3px; overflow-wrap: anywhere; }
+    .careful-note { color: #a05a00; font-size: 13px; margin-top: 4px; }
+    .choices { display: flex; gap: 8px; margin-top: 12px; }
+    .choices button {
+      flex: 1; padding: 14px 4px; font-size: 15px; font-weight: 600;
+      border-radius: 10px; border: 2px solid #d0d3d8; background: #fff;
+      color: #444; cursor: pointer;
+    }
+    .choices button.sel-keep { background: #e6f4ea; border-color: #34a853; color: #1e7b34; }
+    .choices button.sel-unsub { background: #fdecea; border-color: #d93025; color: #b3170b; }
+    .choices button.sel-skip { background: #eef1f4; border-color: #5f6368; color: #3c4043; }
+    .applybar {
+      position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      box-shadow: 0 -2px 8px rgba(0,0,0,.12);
+    }
+    .applybar button {
+      width: 100%; padding: 16px; font-size: 18px; font-weight: 700;
+      border: none; border-radius: 12px; background: #1a73e8; color: #fff;
+      cursor: pointer;
+    }
+    .applybar button:disabled { background: #9bb8e8; }
+    .empty { text-align: center; padding: 60px 24px; color: #555; }
+    .empty .big { font-size: 44px; }
+    /* Overlays: confirmation summary + done screen */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+      align-items: flex-end; z-index: 10;
+    }
+    .overlay.show { display: flex; }
+    .sheet {
+      background: #fff; width: 100%; border-radius: 16px 16px 0 0;
+      padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+      max-height: 82vh; overflow-y: auto;
+    }
+    .sheet h2 { margin: 0 0 10px; font-size: 19px; }
+    .sumgroup { margin: 12px 0; }
+    .sumgroup .label { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+    .sumgroup ul { margin: 4px 0 0; padding-left: 20px; font-size: 14px; color: #444; }
+    .sheet .warn { color: #a05a00; font-size: 14px; margin: 10px 0; }
+    .sheetbtns { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    .sheetbtns button { padding: 16px; font-size: 17px; font-weight: 700; border-radius: 12px; border: none; cursor: pointer; }
+    .btn-confirm { background: #d93025; color: #fff; }
+    .btn-confirm.safe { background: #1a73e8; }
+    .btn-back { background: #eef1f4; color: #3c4043; }
+    .done-note { font-size: 15px; color: #333; line-height: 1.5; margin: 12px 0; }
+    .spinner { text-align: center; padding: 30px 0; font-size: 16px; color: #555; }
+    .errtext { color: #b00020; font-size: 14px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Unsubscribe review</h1>
+    <p id="subtitle">Pick what to do with each sender. Anything you don't
+      touch is simply skipped (no action, may come back later).</p>
+  </header>
+
+  <div id="list"></div>
+
+  <div class="applybar" id="applybar" style="display:none">
+    <button id="applyBtn" onclick="openSummary()">Apply</button>
+  </div>
+
+  <!-- Confirmation summary (second step before anything is saved) -->
+  <div class="overlay" id="summaryOverlay">
+    <div class="sheet">
+      <h2>Confirm your choices</h2>
+      <div id="summaryBody"></div>
+      <div class="sheetbtns">
+        <button class="btn-confirm" id="confirmBtn" onclick="confirmApply()"></button>
+        <button class="btn-back" onclick="closeSummary()">Go back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Done screen -->
+  <div class="overlay" id="doneOverlay">
+    <div class="sheet">
+      <div id="doneBody"></div>
+    </div>
+  </div>
+
+  <script>
+    // Server-injected JSON (already <-escaped, so it cannot close this
+    // script tag). JSON is valid JavaScript, so it is emitted directly.
+    var DATA = <?!= payload ?>;
+    var ITEMS = (DATA && DATA.items) || [];
+    // decision state per senderKey; everything starts as 'skip' (the default)
+    var CHOICE = {};
+    ITEMS.forEach(function (it) { CHOICE[it.senderKey] = 'skip'; });
+
+    /** Escapes text for HTML rendering. */
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /** Friendly label for the unsubscribe method. */
+    function methodLabel(m) {
+      return { oneclick: 'one-click unsubscribe', mailto: 'email unsubscribe',
+        link: 'manual link only', none: 'no unsubscribe method' }[m] || m;
+    }
+
+    // These two mirror the server's safety gate (executeDecisionsForAccount_).
+    // Keep them in step with it: they are what lets this page promise only
+    // what the backend will actually do.
+
+    /** True when the agent will really auto-unsubscribe this sender. */
+    function isAuto(it) {
+      return !it.careful &&
+        (it.unsubMethod === 'oneclick' || it.unsubMethod === 'mailto');
+    }
+
+    /** True when the agent will HOLD this sender rather than expose/contact it. */
+    function willHold(it) {
+      return !!it.careful;
+    }
+
+    /** Renders one sender card. */
+    function cardHtml(it) {
+      var acct = it.account === 'work' ? '💼 work' : '📧 personal';
+      var isCareful = !!it.careful;
+      var subjects = Array.isArray(it.recentSubjects) ?
+        it.recentSubjects.slice(0, 3) : [];
+      var subjectsHtml = subjects.length ?
+        '<div class="subjects"><div class="subjects-label">Recent subjects</div>' +
+        '<ul>' + subjects.map(function (subject) {
+          return '<li>' + esc(subject) + '</li>';
+        }).join('') + '</ul></div>' : '';
+      return '<div class="card' + (isCareful ? ' careful' : '') + '">' +
+        '<div class="who"><span class="name">' +
+        (isCareful ? '⚠️ ' : '') + esc(it.senderName || it.senderEmail) +
+        '</span><span class="acct">' + acct + '</span></div>' +
+        '<div class="addr">' + esc(it.senderEmail) + '</div>' +
+        '<div class="meta">' + esc(it.count14d) + ' in 14 days · ' +
+        esc(methodLabel(it.unsubMethod)) + '</div>' +
+        subjectsHtml +
+        (isCareful ? '<div class="careful-note">Careful: ' + esc(it.careful) +
+          '. If in doubt, leave on Skip.</div>' : '') +
+        '<div class="choices" data-key="' + esc(it.senderKey) + '">' +
+        '<button onclick="pick(this,\'keep\')">Keep</button>' +
+        '<button onclick="pick(this,\'unsub\')">' +
+        (isCareful ? 'Handle safely' : 'Unsub') + '</button>' +
+        '<button class="sel-skip" onclick="pick(this,\'skip\')">Skip</button>' +
+        '</div></div>';
+    }
+
+    /** Renders the whole list, careful senders in their own warned group. */
+    function render() {
+      var list = document.getElementById('list');
+      if (DATA.error) {
+        list.innerHTML = '<div class="empty"><div class="big">😵</div>' +
+          '<p>Something went wrong loading the list:<br>' + esc(DATA.error) +
+          '</p><p>Try again in a minute.</p></div>';
+        return;
+      }
+      if (!ITEMS.length) {
+        list.innerHTML = '<div class="empty"><div class="big">🎉</div>' +
+          '<p><b>Nothing to review.</b></p>' +
+          '<p>New senders will appear in your next digest email.</p></div>';
+        document.getElementById('subtitle').textContent = '';
+        return;
+      }
+      var regular = ITEMS.filter(function (i) { return !i.careful; });
+      var careful = ITEMS.filter(function (i) { return !!i.careful; });
+      var h = '';
+      if (regular.length) {
+        h += '<div class="section-title">Senders (' + regular.length + ')</div>';
+        h += regular.map(cardHtml).join('');
+      }
+      if (careful.length) {
+        h += '<div class="section-title">⚠️ Careful with these (' +
+          careful.length + ')</div>' +
+          '<div class="warnbox">These look sketchy (odd sending address or ' +
+          'missing standard unsubscribe info). Replying or clicking can ' +
+          'CONFIRM your address to a spammer, which makes things worse. ' +
+          'Skip is the safe choice; choose Handle safely for link-free ' +
+          'Block / Report spam guidance.</div>';
+        h += careful.map(cardHtml).join('');
+      }
+      list.innerHTML = h;
+      document.getElementById('applybar').style.display = 'block';
+    }
+
+    /** Handles a Keep/Unsub/Skip tap on one card. */
+    function pick(btn, choice) {
+      var group = btn.parentNode;
+      CHOICE[group.getAttribute('data-key')] = choice;
+      var btns = group.getElementsByTagName('button');
+      for (var i = 0; i < btns.length; i++) btns[i].className = '';
+      btn.className = 'sel-' + choice;
+    }
+
+    /** Groups current choices for the summary. */
+    function grouped() {
+      var g = { keep: [], unsub: [], skip: [] };
+      ITEMS.forEach(function (it) {
+        g[CHOICE[it.senderKey] || 'skip'].push(it);
+      });
+      return g;
+    }
+
+    /** Step 1 of confirm: show the exact summary of what will happen. */
+    function openSummary() {
+      var g = grouped();
+      var autoUnsubs = g.unsub.filter(isAuto);
+      var heldUnsubs = g.unsub.filter(willHold);
+      // Everything else picked for Unsub (non-careful link/none). This group
+      // is load-bearing: without it those picks match neither filter above and
+      // would vanish from the consent screen without ever being mentioned.
+      var restUnsubs = g.unsub.filter(function (i) {
+        return !isAuto(i) && !willHold(i);
+      });
+      function block(label, arr, extra) {
+        if (!arr.length) return '';
+        return '<div class="sumgroup"><div class="label">' + label + ' — ' +
+          arr.length + '</div><ul>' + arr.map(function (i) {
+            return '<li>' + (i.careful ? '⚠️ ' : '') +
+              esc(i.senderName || i.senderEmail) + '</li>';
+          }).join('') + '</ul>' + (extra || '') + '</div>';
+      }
+      var b = block('Unsubscribe automatically', autoUnsubs) +
+        block('Won’t touch — I’ll show you the safe next step', heldUnsubs) +
+        block('Not automatic — I’ll follow up in your digest', restUnsubs) +
+        block('Keep (never ask again)', g.keep) +
+        block('Skip (no action)', g.skip);
+      if (heldUnsubs.length) {
+        b += '<div class="warn">🛡️ ' + heldUnsubs.length + ' of these look ' +
+          'sketchy, so I will <b>not</b> click or email them for you — that ' +
+          'is what confirms your address to a spammer. You’ll get the safe ' +
+          'next step (Block / Report spam) in your digest.</div>';
+      }
+      document.getElementById('summaryBody').innerHTML = b;
+      var cb = document.getElementById('confirmBtn');
+      // Count ONLY the senders that will really be auto-unsubscribed. The red
+      // button must never say "unsubscribe from N" when N includes senders I
+      // refuse to touch (held) or cannot press for you (link/none).
+      cb.textContent = autoUnsubs.length ?
+        'Yes — unsubscribe from ' + autoUnsubs.length +
+          (autoUnsubs.length === 1 ? ' sender' : ' senders') :
+        'Yes — save these choices';
+      cb.className = 'btn-confirm' + (autoUnsubs.length ? '' : ' safe');
+      document.getElementById('summaryOverlay').className = 'overlay show';
+    }
+
+    /** Closes the summary without saving anything. */
+    function closeSummary() {
+      document.getElementById('summaryOverlay').className = 'overlay';
+    }
+
+    /** Step 2 of confirm: actually save decisions via the server. */
+    function confirmApply() {
+      closeSummary();
+      var done = document.getElementById('doneOverlay');
+      done.className = 'overlay show';
+      document.getElementById('doneBody').innerHTML =
+        '<div class="spinner">Saving your decisions…</div>';
+      var payload = ITEMS.map(function (it) {
+        return { senderKey: it.senderKey, decision: CHOICE[it.senderKey] || 'skip' };
+      });
+      google.script.run
+        .withSuccessHandler(onSaved)
+        .withFailureHandler(onSaveError)
+        .submitDecisions(JSON.stringify(payload));
+    }
+
+    /** Success: tell the user plainly what happens next. */
+    function onSaved(stats) {
+      var lines = ['<h2>Done ✅</h2>'];
+      var notes = [];
+      if (stats.protected) {
+        notes.push('<b>' + stats.protected + '</b> turned out to be important ' +
+          'mail, so I kept ' + (stats.protected === 1 ? 'it' : 'them') +
+          ' protected and did <b>not</b> unsubscribe.');
+      }
+      if (stats.deferred) {
+        notes.push('I could not finish <b>' + stats.deferred + '</b> safety ' +
+          (stats.deferred === 1 ? 'check' : 'checks') + ' just now, so I ' +
+          'took no action and will retry safely.');
+      }
+      if (stats.held) {
+        notes.push('<b>' + stats.held + '</b> looked sketchy, so I did ' +
+          '<b>not</b> unsubscribe for you — clicking their link or emailing ' +
+          'them is what confirms your address is real. ' +
+          (stats.held === 1 ? 'It’s' : 'They’re') + ' in your next digest ' +
+          'with the safe next step (Block sender / Report spam).');
+      }
+      if (stats.executedNow) {
+        notes.push('<b>' + stats.executedNow + '</b> unsubscribe' +
+          (stats.executedNow === 1 ? ' was' : 's were') +
+          ' sent from your personal account <b>just now</b>.');
+      }
+      if (stats.queuedWork) {
+        notes.push('<b>' + stats.queuedWork + '</b> work-account unsubscribe' +
+          (stats.queuedWork === 1 ? '' : 's') +
+          ' will go out automatically <b>within the hour</b>.');
+      }
+      if (stats.manual) {
+        notes.push('<b>' + stats.manual + '</b> only offer a web page, ' +
+          'which I can’t press for you — the link will be in your ' +
+          '<b>next digest email</b> for one quick tap.');
+      }
+      if (stats.noMethod) {
+        notes.push('<b>' + stats.noMethod + '</b> offer' +
+          (stats.noMethod === 1 ? 's' : '') + ' no unsubscribe mechanism ' +
+          'at all — I’ll watch ' + (stats.noMethod === 1 ? 'it' : 'them') +
+          ', and the digest will suggest blocking if the mail keeps coming.');
+      }
+      if (stats.kept) {
+        notes.push(stats.kept + ' kept — you won’t be asked about ' +
+          'them again.');
+      }
+      if (stats.skipped) {
+        notes.push(stats.skipped + ' skipped — no action taken.');
+      }
+      if (stats.failed) {
+        notes.push('<span class="errtext">' + stats.failed + ' attempt' +
+          (stats.failed === 1 ? '' : 's') + ' hit an error — details will ' +
+          'be in your next digest.</span>');
+      }
+      if (!notes.length) notes.push('Nothing needed doing.');
+      lines.push('<div class="done-note">' + notes.join('<br><br>') + '</div>');
+      lines.push('<div class="done-note">Each unsubscribe gets checked ' +
+        'after 14 days — if a sender keeps mailing you, the digest will ' +
+        'say so. You can close this page.</div>');
+      document.getElementById('doneBody').innerHTML = lines.join('');
+    }
+
+    /** Failure: invite a retry (a retry is safe and never doubles up). */
+    function onSaveError(err) {
+      document.getElementById('doneBody').innerHTML = '<h2>That didn’t ' +
+        'save</h2><div class="done-note errtext">' +
+        esc(err && err.message ? err.message : err) + '</div>' +
+        '<div class="done-note">Some or none of your choices may have been ' +
+        'saved. Close this and tap Apply again — anything already saved is ' +
+        'remembered and will not be done twice (senders already handled ' +
+        'simply disappear from the list).</div>' +
+        '<div class="sheetbtns"><button class="btn-back" ' +
+        'onclick="document.getElementById(\'doneOverlay\').className=\'overlay\'">' +
+        'Close</button></div>';
+    }
+
+    render();
+  </script>
+</body>
+</html>

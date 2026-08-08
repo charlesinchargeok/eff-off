@@ -1,0 +1,18 @@
+# Dependencies / build
+node_modules/
+dist/
+build/
+
+# Secrets (pre-emptive)
+.env
+.env.*
+*.key
+
+# Local / OS junk
+.DS_Store
+*.log
+
+# Claude Code local-only settings
+.claude/settings.local.json
+
+# The agent channel (.agents/channel.md) is committed so it syncs across machines.
